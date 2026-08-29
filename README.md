@@ -50,6 +50,7 @@ An enterprise-grade, high-performance off-chain delivery daemon for real-time So
 - **Performance**: `< 100ms` P99 ingestion latency target via an asynchronous event-driven memory queue.
 - **Robust Security**: Includes HMAC-SHA256 and Ed25519 signature headers, strict replay protection windowing, and thorough SSRF IP/DNS blacklisting.
 - **Resiliency**: Built-in exponential backoff retry schedules with full randomized jitter to survive downstream subscriber downtimes and network drops.
+- **Distributed Scheduling**: Lease-based worker claiming (`WEBHOOK_WORKER_COUNT`) prevents duplicate deliveries across concurrent workers and replicas, with heartbeat renewal and crash-recovery reclaim.
 - **Operational Guides**: See [WEBHOOK_ARCHITECTURE.md](docs/WEBHOOK_ARCHITECTURE.md), [WEBHOOK_DEPLOYMENT.md](docs/WEBHOOK_DEPLOYMENT.md), and [WEBHOOK_RUNBOOK.md](docs/WEBHOOK_RUNBOOK.md).
 
 ## Architecture
@@ -182,6 +183,18 @@ The GitHub Actions workflow (`.github/workflows/ci.yml`) automatically runs on:
 ### Dependency Vulnerability Scanning
 
 A dedicated GitHub Actions workflow (`.github/workflows/dependency-vulnerability-scan.yml`) runs on pull requests, pushes to `main`, a daily schedule, and manual dispatch. It blocks vulnerable dependency changes with GitHub Dependency Review, audits Rust lockfiles with `cargo audit`, audits Node.js projects with `npm audit`, and publishes a workflow summary for security review. See `docs/runbooks/DEPENDENCY_VULNERABILITY_SCANNING.md` for triage, monitoring, and rollout procedures.
+
+### Automated Performance Regression Detection
+
+A dedicated GitHub Actions workflow (`.github/workflows/performance-regression.yml`) benchmarks the webhook ingestion critical path on every pull request and push to `main`, compares the results against the committed baseline (`.perf/perf-baselines.json`), and fails the check when a metric regresses beyond tolerance (default 30%) or breaches the absolute **<100ms P99** ingestion SLO. Runtime Prometheus alerts (`monitoring/performance-alerts.yml`) catch post-deploy degradation. See [docs/runbooks/PERFORMANCE_REGRESSION.md](docs/runbooks/PERFORMANCE_REGRESSION.md) for the architecture and runbook.
+
+```bash
+# Run the full gate locally (build → benchmark → compare)
+./scripts/perf-regression-gate.sh
+
+# Refresh the baseline after a verified improvement
+./scripts/perf-regression-gate.sh --update-baseline
+```
 
 ### Testing Stages
 

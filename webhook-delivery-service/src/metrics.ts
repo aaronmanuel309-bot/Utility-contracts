@@ -19,9 +19,52 @@ const deliveryDuration = new Histogram({
   registers: [registry],
 });
 
+const ingestionDuration = new Histogram({
+  name: 'webhook_ingestion_duration_milliseconds',
+  help: 'Latency to enqueue a webhook and return HTTP 202 (critical ingestion path)',
+  buckets: [1, 2, 5, 10, 25, 50, 100, 250],
+  registers: [registry],
+});
+
 const queueSize = new Gauge({
   name: 'webhook_queue_size_current',
   help: 'Current size of the webhook delivery queue',
+  registers: [registry],
+});
+
+const schedulerWorkers = new Gauge({
+  name: 'webhook_scheduler_workers_current',
+  help: 'Current number of active scheduler worker loops',
+  registers: [registry],
+});
+
+const schedulerActiveLeases = new Gauge({
+  name: 'webhook_scheduler_active_leases_current',
+  help: 'Current number of jobs being executed under an active worker lease',
+  registers: [registry],
+});
+
+const schedulerJobsSubmitted = new Counter({
+  name: 'webhook_scheduler_jobs_submitted_total',
+  help: 'Total number of jobs submitted to the distributed scheduler',
+  registers: [registry],
+});
+
+const schedulerJobsProcessed = new Counter({
+  name: 'webhook_scheduler_jobs_processed_total',
+  help: 'Total number of jobs executed by scheduler workers',
+  registers: [registry],
+});
+
+const schedulerJobsFailed = new Counter({
+  name: 'webhook_scheduler_jobs_failed_total',
+  help: 'Total number of jobs whose execution threw an error',
+  registers: [registry],
+});
+
+const schedulerLeaseReclaimed = new Counter({
+  name: 'webhook_scheduler_lease_reclaimed_total',
+  help: 'Total number of expired leases reclaimed by another worker (crash recovery)',
   registers: [registry],
 });
 
@@ -109,11 +152,89 @@ export function trackDeliveryAttempt(
 }
 
 /**
+ * Tracks ingestion (enqueue -> HTTP 202) latency in milliseconds.
+ * This is the critical path driving the <100ms P99 ingestion SLA.
+ */
+export function trackIngestionDuration(ms: number): void {
+  try {
+    ingestionDuration.observe(ms);
+  } catch {
+    // Ignored
+  }
+}
+
+/**
  * Tracks current in-memory queue size
  */
 export function trackQueueSize(size: number): void {
   try {
     queueSize.set(size);
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks the number of active scheduler worker loops
+ */
+export function trackSchedulerWorkers(count: number): void {
+  try {
+    schedulerWorkers.set(count);
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks the number of active (unexpired) worker leases
+ */
+export function trackActiveLeases(count: number): void {
+  try {
+    schedulerActiveLeases.set(count);
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks a job being submitted to the scheduler
+ */
+export function trackJobSubmitted(): void {
+  try {
+    schedulerJobsSubmitted.inc();
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks a job being executed (successfully or not)
+ */
+export function trackJobProcessed(): void {
+  try {
+    schedulerJobsProcessed.inc();
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks a job whose execution threw
+ */
+export function trackJobFailed(): void {
+  try {
+    schedulerJobsFailed.inc();
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks a lease that expired and was reclaimed by another worker
+ */
+export function trackLeaseReclaimed(): void {
+  try {
+    schedulerLeaseReclaimed.inc();
   } catch {
     // Ignored
   }

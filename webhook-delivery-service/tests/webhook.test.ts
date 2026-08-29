@@ -3,6 +3,7 @@ import request from 'supertest';
 import express from 'express';
 import app from '../src/index';
 import * as delivery from '../src/delivery';
+import { JobScheduler, LeaseStore } from '../src/jobScheduler';
 import { validateUrlForSsrf, generateSignatures, verifyHmacSignature, verifyEd25519Signature } from '../src/security';
 import { resetMetricCache, getStatsSummary } from '../src/metrics';
 import axios from 'axios';
@@ -207,6 +208,63 @@ describe('Webhook Delivery Service Suite', () => {
     });
   });
 
+  describe('6.5 Distributed Job Scheduler with Lease-based Worker Claiming', () => {
+    test('runs multiple scheduler workers that claim jobs under leases', async () => {
+      const status = delivery.getSchedulerStatus();
+      expect(status.workers.length).toBeGreaterThanOrEqual(2);
+      expect(status.pendingCount).toBe(0);
+      expect(status.activeLeases).toBe(0);
+    });
+
+    test('a delivery completes exactly once despite multiple competing workers', async () => {
+      mockedAxios.post.mockResolvedValue({ status: 200, data: {} });
+
+      const jobId = delivery.enqueueWebhook(
+        { event: 'scheduler_test', timestamp: Date.now(), data: {} },
+        'https://webhook.receiver.com/hook',
+        'secret'
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const logs = delivery.getDeliveryLogs();
+      const log = logs.find((l) => l.id === jobId);
+      expect(log).toBeDefined();
+      expect(log!.status).toBe('SUCCESS');
+      expect(log!.attempts).toBe(1); // never double-delivered
+      expect(delivery.getSchedulerStatus().pendingCount).toBe(0);
+      expect(delivery.getSchedulerStatus().activeLeases).toBe(0);
+    });
+
+    test('lease fencing prevents two workers from executing the same task', async () => {
+      const scheduler = new JobScheduler({ pollIntervalMs: 5, leaseDurationMs: 30000 });
+      scheduler.start(4);
+      let executions = 0;
+
+      scheduler.submit({
+        id: 'fenced-job',
+        runAt: Date.now(),
+        execute: async () => {
+          executions++;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await scheduler.stop();
+      expect(executions).toBe(1);
+    });
+
+    test('expired leases are reclaimed by another worker (crash recovery)', async () => {
+      const store = new LeaseStore();
+      store.claim('j1', 'worker-a', 10);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const attempt = store.claim('j1', 'worker-b', 1000);
+      expect(attempt.granted).toBe(true);
+      expect(attempt.reclaimed).toBe(true);
+    });
+  });
+
   describe('6. Monitoring endpoints', () => {
     test('GET /health should return system status UP', async () => {
       const response = await request(app).get('/health');
@@ -225,6 +283,17 @@ describe('Webhook Delivery Service Suite', () => {
       const response = await request(app).get('/metrics');
       expect(response.status).toBe(200);
       expect(response.text).toContain('webhook_delivery_attempts_total');
+    });
+
+    test('ingestion latency histograms are exposed for regression monitoring', async () => {
+      await request(app).post('/webhooks').send({
+        payload: { event: 'low_balance', timestamp: Date.now(), data: { meter_id: 9 } },
+        url: 'https://webhook.receiver.com/hook',
+        secret: 'shh_secret',
+      });
+      const response = await request(app).get('/metrics');
+      expect(response.status).toBe(200);
+      expect(response.text).toContain('webhook_ingestion_duration_milliseconds_bucket');
     });
   });
 });

@@ -41,12 +41,16 @@ export interface WebhookDeliveryLog {
   lastAttemptTime: number;
 }
 
-// In-memory job queue and log storage
-const queue: WebhookJob[] = [];
+// Delivery log storage (bounded)
 const deliveryLogs: WebhookDeliveryLog[] = [];
 const MAX_LOGS = 100;
 
-let isProcessing = false;
+// Distributed job scheduler: multiple workers claim due webhook jobs under
+// short-lived leases so concurrent replicas/workers never double-deliver the
+// same webhook. Worker count is configurable for horizontal scaling.
+const WORKER_COUNT = parseInt(process.env.WEBHOOK_WORKER_COUNT || '3', 10);
+const scheduler = new JobScheduler();
+scheduler.start(WORKER_COUNT);
 
 /**
  * Enqueue a new webhook delivery job
@@ -71,8 +75,16 @@ export function enqueueWebhook(
     nextAttemptTime: Date.now(),
   };
 
-  queue.push(job);
-  trackQueueSize(queue.length);
+  // Submit the job to the distributed scheduler; a worker will claim it under
+  // a lease as soon as it is due.
+  scheduler.submit({
+    id,
+    runAt: job.nextAttemptTime,
+    execute: async (ctx: ExecuteContext) => {
+      await deliverWebhook(job, ctx);
+    },
+  });
+  trackQueueSize(scheduler.getPendingCount());
 
   // Initialize delivery log
   addLog({
@@ -83,11 +95,6 @@ export function enqueueWebhook(
     attempts: 0,
     status: 'RETRYING',
     lastAttemptTime: Date.now(),
-  });
-
-  // Process queue asynchronously
-  setImmediate(() => {
-    processQueue();
   });
 
   return id;
@@ -101,10 +108,17 @@ export function getDeliveryLogs(): WebhookDeliveryLog[] {
 }
 
 /**
- * Retrieve queue size
+ * Retrieve queue size (jobs waiting or due to be claimed by workers)
  */
 export function getQueueSize(): number {
-  return queue.length;
+  return scheduler.getPendingCount();
+}
+
+/**
+ * Retrieve scheduler status (worker ids, pending jobs, active leases)
+ */
+export function getSchedulerStatus() {
+  return scheduler.getStatus();
 }
 
 /**
@@ -126,7 +140,7 @@ export function requeueDeadLetter(id: string): string | null {
  * Clear queue and logs (primarily for testing)
  */
 export function clearQueueAndLogs(): void {
-  queue.length = 0;
+  scheduler.clear();
   deliveryLogs.length = 0;
   resetDeadLetterQueue();
   trackQueueSize(0);
@@ -160,46 +174,10 @@ export function calculateRetryDelay(attempt: number, baseDelay = 1000, maxDelay 
 }
 
 /**
- * Background queue processor
+ * Deliver a single webhook job. Runs inside a scheduler worker that holds the
+ * job's lease; retries are handled by rescheduling the job at a future time.
  */
-async function processQueue() {
-  if (isProcessing) return;
-  isProcessing = true;
-
-  try {
-    while (queue.length > 0) {
-      // Find jobs ready for processing (nextAttemptTime <= now)
-      const now = Date.now();
-      const jobIndex = queue.findIndex((job) => job.nextAttemptTime <= now);
-
-      if (jobIndex === -1) {
-        // No jobs are ready right now, wait or break
-        break;
-      }
-
-      // Extract the job
-      const [job] = queue.splice(jobIndex, 1);
-      trackQueueSize(queue.length);
-
-      // Process the job
-      await deliverWebhook(job);
-    }
-  } finally {
-    isProcessing = false;
-
-    // If there are still items in the queue, schedule the next check
-    if (queue.length > 0) {
-      setTimeout(() => {
-        processQueue();
-      }, 200); // Check every 200ms
-    }
-  }
-}
-
-/**
- * Deliver a single webhook job
- */
-async function deliverWebhook(job: WebhookJob) {
+async function deliverWebhook(job: WebhookJob, ctx: ExecuteContext) {
   job.attempts++;
   const startTime = Date.now();
 
@@ -288,11 +266,12 @@ async function deliverWebhook(job: WebhookJob) {
     trackDeliveryAttempt(statusCode || 0, duration, job.attempts);
 
     if (job.attempts < job.maxAttempts) {
-      // Re-queue for retry
+      // Schedule a retry with exponential backoff; the job is released back to
+      // the scheduler pool and becomes claimable again at nextAttemptTime.
       const delay = calculateRetryDelay(job.attempts);
       job.nextAttemptTime = Date.now() + delay;
-      queue.push(job);
-      trackQueueSize(queue.length);
+      ctx.reschedule(job.nextAttemptTime);
+      trackQueueSize(scheduler.getPendingCount());
 
       logDelivery('warn', 'webhook delivery failed, retrying', {
         'webhook.id': job.id,
