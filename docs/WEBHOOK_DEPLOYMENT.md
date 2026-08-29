@@ -57,6 +57,12 @@ Once the Green environment passes all sanity tests:
 2. Monitor active connections on Blue and allow a **5-minute graceful drain window** to complete any outstanding retry attempts or delivery backlogs.
 3. Shut down or idle the Blue infrastructure.
 
+### Delivery Concurrency & Scheduler Workers
+Queue processing is performed by a configurable pool of scheduler workers that claim jobs under short-lived leases, so multiple replicas can run concurrently without double-delivering webhooks:
+- Set `WEBHOOK_WORKER_COUNT` (default `3`) per deployment to control in-process delivery concurrency.
+- To scale out, increase the replica count of the webhook containers; each replica contributes its worker pool and lease-based claiming prevents duplicate deliveries across replicas.
+- After scaling, verify `webhook_scheduler_workers_current` and `webhook_scheduler_active_leases_current` in `/metrics` and confirm `webhook_scheduler_lease_reclaimed_total` stays near zero (reclaimed leases indicate workers expiring mid-delivery and warrant investigation).
+
 ---
 
 ## 3. Canary Analysis Strategy

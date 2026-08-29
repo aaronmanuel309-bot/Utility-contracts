@@ -25,6 +25,42 @@ const queueSize = new Gauge({
   registers: [registry],
 });
 
+const schedulerWorkers = new Gauge({
+  name: 'webhook_scheduler_workers_current',
+  help: 'Current number of active scheduler worker loops',
+  registers: [registry],
+});
+
+const schedulerActiveLeases = new Gauge({
+  name: 'webhook_scheduler_active_leases_current',
+  help: 'Current number of jobs being executed under an active worker lease',
+  registers: [registry],
+});
+
+const schedulerJobsSubmitted = new Counter({
+  name: 'webhook_scheduler_jobs_submitted_total',
+  help: 'Total number of jobs submitted to the distributed scheduler',
+  registers: [registry],
+});
+
+const schedulerJobsProcessed = new Counter({
+  name: 'webhook_scheduler_jobs_processed_total',
+  help: 'Total number of jobs executed by scheduler workers',
+  registers: [registry],
+});
+
+const schedulerJobsFailed = new Counter({
+  name: 'webhook_scheduler_jobs_failed_total',
+  help: 'Total number of jobs whose execution threw an error',
+  registers: [registry],
+});
+
+const schedulerLeaseReclaimed = new Counter({
+  name: 'webhook_scheduler_lease_reclaimed_total',
+  help: 'Total number of expired leases reclaimed by another worker (crash recovery)',
+  registers: [registry],
+});
+
 const totalFailures = new Counter({
   name: 'webhook_failures_total',
   help: 'Total number of webhooks that completely failed after all retries or SSRF drops',
@@ -88,6 +124,72 @@ export function trackDeliveryAttempt(
 export function trackQueueSize(size: number): void {
   try {
     queueSize.set(size);
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks the number of active scheduler worker loops
+ */
+export function trackSchedulerWorkers(count: number): void {
+  try {
+    schedulerWorkers.set(count);
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks the number of active (unexpired) worker leases
+ */
+export function trackActiveLeases(count: number): void {
+  try {
+    schedulerActiveLeases.set(count);
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks a job being submitted to the scheduler
+ */
+export function trackJobSubmitted(): void {
+  try {
+    schedulerJobsSubmitted.inc();
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks a job being executed (successfully or not)
+ */
+export function trackJobProcessed(): void {
+  try {
+    schedulerJobsProcessed.inc();
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks a job whose execution threw
+ */
+export function trackJobFailed(): void {
+  try {
+    schedulerJobsFailed.inc();
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks a lease that expired and was reclaimed by another worker
+ */
+export function trackLeaseReclaimed(): void {
+  try {
+    schedulerLeaseReclaimed.inc();
   } catch {
     // Ignored
   }

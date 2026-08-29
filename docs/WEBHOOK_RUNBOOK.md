@@ -79,3 +79,23 @@ To prevent breaking integrations during rotation:
 To ensure the safety of the off-chain system, the SSRF (Server-Side Request Forgery) engine must be audited after any networking or DNS upgrades:
 1. Verify that the URL parser correctly flags subnets by running integration tests.
 2. Inspect server firewalls, ensuring egress traffic is strictly barred from routing to cloud provider private IP ranges and internal Kubernetes API service accounts.
+
+---
+
+## 5. Scheduler & Worker Operations
+
+Queue processing runs on the distributed job scheduler, where workers claim jobs under short-lived leases. Diagnose scheduler health through the `webhook_scheduler_*` metrics on `/metrics` and the scheduler block on `/health`.
+
+### Health Indicators
+- `webhook_scheduler_workers_current` **0** → worker loops are not running; the scheduler cannot drain the queue. Restart the service.
+- `webhook_scheduler_active_leases_current` sustained at the worker count → all workers are blocked on slow deliveries; inspect downstream endpoint latency and consider scaling out.
+- `webhook_scheduler_lease_reclaimed_total` climbing → workers are expiring mid-delivery (lease not renewed). Investigate event-loop blocking / GC pauses, or increase the lease duration.
+
+### Diagnosing duplicate or missed deliveries
+1. Confirm workers are healthy: `curl -s http://webhook-service.internal/health` and check `scheduler.workers` is non-empty and `scheduler.pendingCount` is not climbing.
+2. Confirm no lease thrash: `curl -s http://webhook-service.internal/metrics | grep webhook_scheduler_lease_reclaimed_total`.
+3. If `pendingCount` climbs while `active_leases` stays low, a worker crash loop is likely; scale the deployment and inspect container restart counts.
+
+### Tuning
+- Delivery concurrency per instance: `WEBHOOK_WORKER_COUNT` (default `3`).
+- Lease duration and heartbeat are configurable in `jobScheduler.ts` (`leaseDurationMs`, `leaseRenewIntervalMs`, `pollIntervalMs`).
