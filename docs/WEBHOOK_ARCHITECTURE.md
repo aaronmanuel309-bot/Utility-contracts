@@ -92,6 +92,18 @@ Transient network drops, rate limits (HTTP 429), and short-term receiver outages
 - **Full Jitter**: Prevents "thundering herd" issues by introducing randomized delay ($t_{jitter} = \text{random}(0, t_{backoff})$).
 - **Max Retries**: Defaulted to **5 attempts** before a webhook is classified as failed.
 
+### 3.6 Dead Letter Queue (`/deadletter`)
+
+Rather than silently dropping a message that can never be delivered, the service routes permanently failed jobs into a bounded **Dead Letter Queue (DLQ)** for inspection and operator-driven redelivery:
+
+- **What is dead-lettered**: Deliveries that exhaust their maximum retry budget (`MAX_ATTEMPTS_EXHAUSTED`) and jobs rejected by the SSRF shield (`SSRF_BLOCKED`).
+- **Retention**: A bounded, in-memory store (default **1,000 entries**, FIFO). When full, the oldest dead letter is evicted and counted as discarded for alerting.
+- **Inspection**: `GET /deadletter` lists entries (newest first); `GET /deadletter/:id` fetches a single entry including the failed payload, attempt history, reason, and last error.
+- **Redelivery**: `POST /deadletter/:id/requeue` reconstructs a fresh delivery job from the stored entry (with a fresh retry budget) and pushes it back onto the active queue. Requeued deliveries are re-signed and pass through the full security + retry pipeline again.
+- **Removal**: `DELETE /deadletter/:id` removes a single entry; `DELETE /deadletter?confirm=true` purges the whole queue. Purging requires an explicit confirmation query parameter to prevent accidental data loss.
+
+The DLQ is intentionally in-memory to mirror the service's ingestion pipeline and keep inspection/redelivery on the fast path. For deployments requiring cross-restart durability, the out-of-process persistent queue pattern (Redis/RabbitMQ) noted in the runbook should be substituted.
+
 ---
 
 ## 4. Monitoring & Metrics
@@ -101,3 +113,7 @@ The service registers Prometheus counters and histograms to measure health indic
 - `webhook_delivery_duration_seconds`: Histogram of endpoint response latency.
 - `webhook_queue_size_current`: Gauge representing current queue occupancy.
 - `webhook_failures_total`: Total dropped or exhausted delivery alerts.
+- `webhook_dead_letter_queue_size_current`: Gauge of the current DLQ occupancy.
+- `webhook_dead_letter_enqueued_total`: Counter of messages entering the DLQ, labeled by `reason` (`MAX_ATTEMPTS_EXHAUSTED` | `SSRF_BLOCKED`).
+- `webhook_dead_letter_requeued_total`: Counter of dead letters pushed back onto the active queue.
+- `webhook_dead_letter_discarded_total`: Counter of dead letters evicted, purged, or manually removed.

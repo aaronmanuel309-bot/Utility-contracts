@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { generateSignatures, validateUrlForSsrf } from './security';
-import { trackDeliveryAttempt, trackQueueSize, trackFailure } from './metrics';
+import { trackDeliveryAttempt, trackQueueSize, trackFailure, trackDeadLetterRequeued } from './metrics';
+import { reportDeadLetter, popDeadLetter, resetDeadLetterQueue, DeadLetterEntry } from './deadLetterQueue';
 import { logger, LogAttributes } from './logger';
 
 // Structured logging is skipped in tests: Jest's console interception adds
@@ -107,11 +108,27 @@ export function getQueueSize(): number {
 }
 
 /**
+ * Push a dead letter back onto the active delivery queue as a fresh job with a
+ * fresh retry budget. Returns the new webhook job id, or `null` if the dead
+ * letter does not exist.
+ */
+export function requeueDeadLetter(id: string): string | null {
+  const entry = popDeadLetter(id);
+  if (!entry) {
+    return null;
+  }
+  const newJobId = enqueueWebhook(entry.payload, entry.url, entry.secret, entry.privateKey, entry.maxAttempts);
+  trackDeadLetterRequeued();
+  return newJobId;
+}
+
+/**
  * Clear queue and logs (primarily for testing)
  */
 export function clearQueueAndLogs(): void {
   queue.length = 0;
   deliveryLogs.length = 0;
+  resetDeadLetterQueue();
   trackQueueSize(0);
 }
 
@@ -191,6 +208,18 @@ async function deliverWebhook(job: WebhookJob) {
   if (!ssrfCheck.valid) {
     const errorMsg = `SSRF Prevention: ${ssrfCheck.reason}`;
     trackFailure();
+    reportDeadLetter({
+      id: job.id,
+      url: job.url,
+      payload: job.payload,
+      secret: job.secret,
+      privateKey: job.privateKey,
+      attempts: job.attempts,
+      maxAttempts: job.maxAttempts,
+      reason: 'SSRF_BLOCKED',
+      errorMessage: errorMsg,
+      deadLetteredAt: Date.now(),
+    });
     logDelivery('warn', 'webhook delivery dropped by SSRF check', {
       'webhook.id': job.id,
       'webhook.event': job.payload.event,
@@ -286,8 +315,21 @@ async function deliverWebhook(job: WebhookJob) {
         lastAttemptTime: Date.now(),
       });
     } else {
-      // Max attempts exhausted
+      // Max attempts exhausted -> move to the dead letter queue
       trackFailure();
+      reportDeadLetter({
+        id: job.id,
+        url: job.url,
+        payload: job.payload,
+        secret: job.secret,
+        privateKey: job.privateKey,
+        attempts: job.attempts,
+        maxAttempts: job.maxAttempts,
+        reason: 'MAX_ATTEMPTS_EXHAUSTED',
+        errorMessage: `Max attempts (${job.maxAttempts}) exhausted. Last error: ${errorMessage}`,
+        statusCode,
+        deadLetteredAt: Date.now(),
+      });
       logDelivery('error', 'webhook delivery failed permanently', {
         'webhook.id': job.id,
         'webhook.event': job.payload.event,

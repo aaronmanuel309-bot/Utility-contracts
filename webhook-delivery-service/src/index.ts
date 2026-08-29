@@ -1,5 +1,12 @@
 import express, { Request, Response } from 'express';
-import { enqueueWebhook, getDeliveryLogs, getQueueSize } from './delivery';
+import { enqueueWebhook, getDeliveryLogs, getQueueSize, requeueDeadLetter } from './delivery';
+import {
+  getDeadLetters,
+  getDeadLetter,
+  getDeadLetterCount,
+  removeDeadLetter,
+  purgeDeadLetters,
+} from './deadLetterQueue';
 import { getPrometheusMetrics, getStatsSummary } from './metrics';
 import { logger } from './logger';
 
@@ -93,6 +100,77 @@ app.get('/logs', (req: Request, res: Response) => {
 });
 
 /**
+ * GET /deadletter
+ * List all messages held in the dead letter queue
+ */
+app.get('/deadletter', (req: Request, res: Response) => {
+  return res.json({
+    count: getDeadLetterCount(),
+    deadLetters: getDeadLetters(),
+  });
+});
+
+/**
+ * GET /deadletter/:id
+ * Fetch a single dead letter by id
+ */
+app.get('/deadletter/:id', (req: Request, res: Response) => {
+  const entry = getDeadLetter(req.params.id);
+  if (!entry) {
+    return res.status(404).json({ error: 'Dead letter not found.' });
+  }
+  return res.json(entry);
+});
+
+/**
+ * POST /deadletter/:id/requeue
+ * Push a dead letter back onto the active delivery queue
+ */
+app.post('/deadletter/:id/requeue', (req: Request, res: Response) => {
+  const newJobId = requeueDeadLetter(req.params.id);
+  if (newJobId === null) {
+    return res.status(404).json({ error: 'Dead letter not found or cannot be requeued.' });
+  }
+  return res.json({
+    status: 'REQUEUED',
+    message: 'Dead letter pushed back onto the active delivery queue.',
+    jobId: newJobId,
+  });
+});
+
+/**
+ * DELETE /deadletter/:id
+ * Permanently remove a single dead letter
+ */
+app.delete('/deadletter/:id', (req: Request, res: Response) => {
+  const removed = removeDeadLetter(req.params.id);
+  if (!removed) {
+    return res.status(404).json({ error: 'Dead letter not found.' });
+  }
+  return res.json({
+    status: 'DELETED',
+    message: 'Dead letter removed from the queue.',
+  });
+});
+
+/**
+ * DELETE /deadletter
+ * Purge all dead letters (requires ?confirm=true)
+ */
+app.delete('/deadletter', (req: Request, res: Response) => {
+  if (req.query.confirm !== 'true') {
+    return res.status(400).json({
+      error: 'Purging the dead letter queue requires a ?confirm=true query parameter.',
+    });
+  }
+  const removed = purgeDeadLetters();
+  return res.json({
+    status: 'PURGED',
+    message: `Removed ${removed} dead letter(s) from the queue.`,
+  });
+});
+
+/**
  * GET /health
  * Basic system health indicator
  */
@@ -101,6 +179,7 @@ app.get('/health', (req: Request, res: Response) => {
     status: 'UP',
     timestamp: Date.now(),
     queueSize: getQueueSize(),
+    deadLetterQueueSize: getDeadLetterCount(),
   });
 });
 

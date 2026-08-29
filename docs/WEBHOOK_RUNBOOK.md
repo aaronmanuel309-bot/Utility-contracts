@@ -79,3 +79,42 @@ To prevent breaking integrations during rotation:
 To ensure the safety of the off-chain system, the SSRF (Server-Side Request Forgery) engine must be audited after any networking or DNS upgrades:
 1. Verify that the URL parser correctly flags subnets by running integration tests.
 2. Inspect server firewalls, ensuring egress traffic is strictly barred from routing to cloud provider private IP ranges and internal Kubernetes API service accounts.
+
+---
+
+## 5. Dead Letter Queue (DLQ) Operations
+
+When a webhook permanently fails after exhausting its retry budget, or is rejected by the SSRF shield, it is moved to the **dead letter queue** instead of being dropped. `webhook_dead_letter_queue_size_current` climbing or `webhook_dead_letter_enqueued_total` increasing indicates persistent downstream failures.
+
+### Step 1: Inspect the dead letter queue
+```bash
+curl -s http://webhook-service.internal/deadletter
+# {"count": 3, "deadLetters": [ { "id": "...", "reason": "MAX_ATTEMPTS_EXHAUSTED", ... } ]}
+
+# Inspect a single entry to see the failure reason and last error
+curl -s http://webhook-service.internal/deadletter/<job-id>
+```
+
+### Step 2: Confirm the root cause before redelivering
+1. Verify the downstream endpoint is healthy (`curl` / `GET /health` on the receiver).
+2. Confirm the stored `errorMessage` is a transient failure (5xx, timeout) and not a request you should not re-send (e.g. 4xx contract violations).
+
+### Step 3: Redeliver the message
+```bash
+# Push a single dead letter back onto the active queue with a fresh retry budget
+curl -X POST http://webhook-service.internal/deadletter/<job-id>/requeue
+# { "status": "REQUEUED", "jobId": "<new-job-id>" }
+```
+The requeued message is re-signed and passes through the full security + retry pipeline again.
+
+### Step 4: Discard dead letters
+```bash
+# Remove a single entry
+curl -X DELETE http://webhook-service.internal/deadletter/<job-id>
+# Purge the entire queue (requires explicit confirmation)
+curl -X DELETE http://webhook-service.internal/deadletter?confirm=true
+```
+
+### Operational Notes
+- **Bounded retention**: The DLQ holds up to 1,000 entries in memory; the oldest entry is evicted (and counted as `webhook_dead_letter_discarded_total`) when capacity is exceeded.
+- **Durability**: The DLQ is in-memory. For transactions that must survive service restarts, deploy the out-of-process persistent queue pattern (Redis/RabbitMQ) as the backing store.

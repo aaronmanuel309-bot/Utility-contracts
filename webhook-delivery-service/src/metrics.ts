@@ -31,12 +31,38 @@ const totalFailures = new Counter({
   registers: [registry],
 });
 
+const deadLetterCount = new Gauge({
+  name: 'webhook_dead_letter_queue_size_current',
+  help: 'Current number of messages held in the dead letter queue',
+  registers: [registry],
+});
+
+const deadLetterEnqueued = new Counter({
+  name: 'webhook_dead_letter_enqueued_total',
+  help: 'Total number of messages moved into the dead letter queue',
+  labelNames: ['reason'],
+  registers: [registry],
+});
+
+const deadLetterRequeued = new Counter({
+  name: 'webhook_dead_letter_requeued_total',
+  help: 'Total number of dead letters pushed back onto the active delivery queue',
+  registers: [registry],
+});
+
+const deadLetterDiscarded = new Counter({
+  name: 'webhook_dead_letter_discarded_total',
+  help: 'Total number of dead letters discarded (evicted, purged, or removed)',
+  registers: [registry],
+});
+
 // Cache variables for UI Dashboard querying without Prometheus integration
 const statCache = {
   successCount: 0,
   failureCount: 0,
   totalAttempts: 0,
   durations: [] as number[],
+  dlqCount: 0,
   lastReset: Date.now(),
 };
 
@@ -105,6 +131,51 @@ export function trackFailure(): void {
 }
 
 /**
+ * Tracks the current dead letter queue size
+ */
+export function trackDeadLetterCount(size: number): void {
+  statCache.dlqCount = size;
+  try {
+    deadLetterCount.set(size);
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks a message entering the dead letter queue
+ */
+export function trackDeadLetterEnqueued(reason: string): void {
+  try {
+    deadLetterEnqueued.inc({ reason });
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks a dead letter being pushed back onto the active queue
+ */
+export function trackDeadLetterRequeued(): void {
+  try {
+    deadLetterRequeued.inc();
+  } catch {
+    // Ignored
+  }
+}
+
+/**
+ * Tracks a dead letter being permanently discarded
+ */
+export function trackDeadLetterDiscarded(): void {
+  try {
+    deadLetterDiscarded.inc();
+  } catch {
+    // Ignored
+  }
+}
+
+/**
  * Reset metric caches (primarily for testing)
  */
 export function resetMetricCache(): void {
@@ -112,6 +183,7 @@ export function resetMetricCache(): void {
   statCache.failureCount = 0;
   statCache.totalAttempts = 0;
   statCache.durations = [];
+  statCache.dlqCount = 0;
   statCache.lastReset = Date.now();
 }
 
@@ -141,6 +213,7 @@ export function getStatsSummary() {
     p95LatencyMs: Math.round(p95 * 1000),
     p99LatencyMs: Math.round(p99 * 1000),
     successRate: Math.round(successRate * 100) / 100,
+    dlqCount: statCache.dlqCount,
     uptimeSeconds: Math.floor((Date.now() - statCache.lastReset) / 1000),
   };
 }
