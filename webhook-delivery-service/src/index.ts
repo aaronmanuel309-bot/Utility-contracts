@@ -1,6 +1,6 @@
 import express, { Request, Response } from 'express';
-import { enqueueWebhook, getDeliveryLogs, getQueueSize } from './delivery';
-import { getPrometheusMetrics, getStatsSummary, trackIngestionDuration } from './metrics';
+import { enqueueWebhook, getDeliveryLogs, getQueueSize, getSchedulerStatus } from './delivery';
+import { getPrometheusMetrics, getStatsSummary } from './metrics';
 import { logger } from './logger';
 
 const app = express();
@@ -104,6 +104,7 @@ app.get('/health', (req: Request, res: Response) => {
     status: 'UP',
     timestamp: Date.now(),
     queueSize: getQueueSize(),
+    scheduler: getSchedulerStatus(),
   });
 });
 

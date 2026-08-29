@@ -50,6 +50,7 @@ An enterprise-grade, high-performance off-chain delivery daemon for real-time So
 - **Performance**: `< 100ms` P99 ingestion latency target via an asynchronous event-driven memory queue.
 - **Robust Security**: Includes HMAC-SHA256 and Ed25519 signature headers, strict replay protection windowing, and thorough SSRF IP/DNS blacklisting.
 - **Resiliency**: Built-in exponential backoff retry schedules with full randomized jitter to survive downstream subscriber downtimes and network drops.
+- **Distributed Scheduling**: Lease-based worker claiming (`WEBHOOK_WORKER_COUNT`) prevents duplicate deliveries across concurrent workers and replicas, with heartbeat renewal and crash-recovery reclaim.
 - **Operational Guides**: See [WEBHOOK_ARCHITECTURE.md](docs/WEBHOOK_ARCHITECTURE.md), [WEBHOOK_DEPLOYMENT.md](docs/WEBHOOK_DEPLOYMENT.md), and [WEBHOOK_RUNBOOK.md](docs/WEBHOOK_RUNBOOK.md).
 
 ## Architecture

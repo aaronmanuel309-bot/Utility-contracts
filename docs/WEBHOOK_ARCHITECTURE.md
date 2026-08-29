@@ -92,6 +92,17 @@ Transient network drops, rate limits (HTTP 429), and short-term receiver outages
 - **Full Jitter**: Prevents "thundering herd" issues by introducing randomized delay ($t_{jitter} = \text{random}(0, t_{backoff})$).
 - **Max Retries**: Defaulted to **5 attempts** before a webhook is classified as failed.
 
+### 3.6 Distributed Job Scheduler with Lease-based Worker Claiming
+
+Queue processing runs on a **distributed job scheduler** (`jobScheduler.ts`) where multiple worker loops compete to claim due webhook jobs under short-lived **leases**:
+
+- **Claim protocol**: A job becomes claimable once its `runAt` time has elapsed. A worker acquires the job by claiming a lease from a shared lease registry (`LeaseStore`); while that lease is valid, no other worker can claim the same job, so concurrent replicas/workers can never double-deliver the same webhook.
+- **Fencing across processes**: `LeaseStore.claim` is atomic (synchronous within the Node event loop and serialisable against a shared store such as Redis/etcd in production), which gives cross-process mutual exclusion. Each lease carries a monotonic fencing token.
+- **Heartbeat / lease renewal**: while a job is executing, the owning worker renews its lease on a configurable interval, so a healthy long-running delivery is never stolen by a competing worker.
+- **Crash recovery**: if a worker dies without renewing, its lease expires and another worker reclaims the job — exactly-once under normal operation, at-least-once on worker failure.
+- **Retry via rescheduling**: a failed attempt with retries remaining calls `ctx.reschedule(nextAttemptTime)` (exponential backoff + jitter), returning the job to the claimable pool at a future time.
+- **Horizontal scaling**: worker count is controlled by `WEBHOOK_WORKER_COUNT` (default `3`). Scaling replicas or raising the worker count increases delivery concurrency without risking duplicate deliveries.
+
 ---
 
 ## 4. Monitoring & Metrics
@@ -101,3 +112,9 @@ The service registers Prometheus counters and histograms to measure health indic
 - `webhook_delivery_duration_seconds`: Histogram of endpoint response latency.
 - `webhook_queue_size_current`: Gauge representing current queue occupancy.
 - `webhook_failures_total`: Total dropped or exhausted delivery alerts.
+- `webhook_scheduler_workers_current`: Gauge of active worker loops.
+- `webhook_scheduler_active_leases_current`: Gauge of jobs currently executing under a worker lease.
+- `webhook_scheduler_jobs_submitted_total`: Counter of jobs submitted to the scheduler.
+- `webhook_scheduler_jobs_processed_total`: Counter of jobs executed by workers.
+- `webhook_scheduler_jobs_failed_total`: Counter of jobs whose execution threw.
+- `webhook_scheduler_lease_reclaimed_total`: Counter of expired leases reclaimed by another worker (crash recovery events).
